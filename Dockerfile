@@ -28,7 +28,7 @@ COPY backend/scripts ./scripts
 COPY backend/models ./models
 COPY --from=web /web/dist /app/frontend/dist
 RUN useradd -m -u 10001 app && mkdir -p /data && chown app /data
-USER app
 EXPOSE 8000
-# 单进程运行：后台对账/清理线程、限流与锁都在进程内；吞吐靠 YCG_WORKERS 线程调节
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# 入口脚本以 root 启动：把 /data（可能是 root 所有的挂载盘）交给 app 用户（uid 10001）后降权，
+# 再以单进程运行 uvicorn，监听 $PORT（Render 会注入；docker compose 下默认 8000）
+CMD ["python", "scripts/entrypoint.py"]

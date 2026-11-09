@@ -73,7 +73,7 @@ cd backend && .venv/Scripts/python -m pytest -q
    - 商品 A「照片导出」：次数包 `QUANTITY / COUNT`，档位 1 次 ¥0.99、3 次 ¥1.99、10 次 ¥4.99
    - 商品 B「备考季月卡」：时长包 `ONE_TIME_DURATION / MONTH` ¥9.9（可选）
 2. 支付宝开放平台应用：配置 RSA2 密钥，拿到 `app_id`、应用私钥、**支付宝公钥**，开通接口权限。
-3. `backend/.env`：`YCG_PAY_MODE=nowpay`，填 `ALIPAY_*`、`NOWPAY_PRODUCT_COUNT`（小程序商品详情页复制的 ID）、`NOWPAY_PRODUCT_MONTHLY`；`YCG_BASE_URL` 必须是 HTTPS（`callback_url` 要求 HTTPS）。
+3. 配置（Render 填在 Environment 页面，自有服务器填 `backend/.env`）：`YCG_PAY_MODE=nowpay`，填 `ALIPAY_*`、`NOWPAY_PRODUCT_COUNT`（小程序商品详情页复制的 ID）、`NOWPAY_PRODUCT_MONTHLY`；`YCG_BASE_URL` 必须是 HTTPS（`callback_url` 要求 HTTPS）。详见下文「部署」。
 4. **报名参赛、即刻收签约、开放平台应用必须是同一个支付宝账号主体**，否则付费人数不计入。
 
 ### 状态机要点（与官方文档对齐，均有测试覆盖）
@@ -96,13 +96,107 @@ cd backend && .venv/Scripts/python -m pytest -q
 | 支付宝 App 内打开返回页 | 返回地址带 HMAC 签名，无 Cookie 也能查看结果和下载，并展示取件码 |
 | 退款 | 文档没有退款/撤销核销接口：生成失败不扣次数；被驳回免费重做；其余人工处理（FAQ 已写明） |
 
-## 部署（Docker）
+## 部署
+
+目前用 **Render** 部署：服务连接 GitHub 仓库，推送到 `main` 后自动构建、自动上线。也可以部署到自己的服务器（Docker Compose），见方式二。
+
+两种方式用的是同一个 `Dockerfile`。镜像里已经包含前端构建产物和两个模型。容器启动时，入口脚本 `backend/scripts/entrypoint.py` 先把数据目录 `/data` 交给 app 用户（uid 10001），然后降权以单进程运行，监听 `$PORT`（没有设置时用 8000）。
+
+### 方式一：Render（当前使用）
+
+> `backend/.env` 在 `.gitignore` 里，**不会上传到 GitHub，Render 读不到**。所有配置都要填在 Render 控制台的 **Environment** 页面。
+> 镜像已经固定了 `YCG_ENV=prod` 和 `YCG_DATA_DIR=/data`，这两项不用填。
+
+#### 1. 服务设置（Settings）
+
+| 项目 | 填写 | 说明 |
+|---|---|---|
+| Language / Runtime | `Docker` | 自动使用仓库根目录的 `Dockerfile`。Dockerfile Path 填 `./Dockerfile`，Docker Build Context 填 `.` |
+| Branch | `main` | Auto-Deploy 保持 `On Commit`，推送代码后自动部署 |
+| Region | **Singapore** | 离国内最近。区域**创建后不能改**，选错了只能新建一个服务 |
+| Instance Type | **Standard（1 CPU / 2 GB，$25/月）** | 本机实测，处理照片时内存峰值约 500–550MB。512MB 的 Free 和 Starter 会因内存不足被强制重启。Free 还有两个问题：15 分钟没人访问就休眠，再打开要等约 1 分钟；不能挂磁盘 |
+| Health Check Path | `/api/health` | |
+
+#### 2. 挂持久化磁盘（Disks）
+
+Render 默认使用临时文件系统：**每次部署（每推送一次代码都会部署）和每次重启，容器里写入的文件都会清空**。不挂磁盘的话，数据库也会跟着清空，用户的解锁记录、取件码、已购次数和账号的对应关系都会丢失，已经付过钱的用户就找不回自己的次数了。
+
+| 项目 | 填写 |
+|---|---|
+| Mount Path | `/data` |
+| Size | `1 GB` 足够（照片 24 小时后自动删除）。磁盘按容量另外计费，价格以 Render 定价页为准 |
+
+挂了磁盘的服务不能零停机部署，每次部署会中断几秒；也不能扩成多个实例。本应用本来就只能单实例运行，所以不受影响。
+
+#### 3. 环境变量（Environment）
+
+| Key | Value | 说明 |
+|---|---|---|
+| `YCG_SECRET_KEY` | 随机字符串 | **必填**，不填就会报“生产环境必须设置 YCG_SECRET_KEY”，服务起不来。点值输入框旁边的 Generate 生成，或者在本机运行 `python -c "import secrets;print(secrets.token_hex(32))"`。**生成后不要再改**：一改，已发出的下载链接和用户的登录状态全部失效 |
+| `YCG_PAY_MODE` | `off` | **必填**，不填默认是 `mock`，会报“生产环境禁止使用模拟支付”。即刻收白名单获批前填 `off`，网站正常使用，点支付提示“支付暂未开通”；获批后改成 `nowpay` |
+| `YCG_BASE_URL` | `https://你的服务名.onrender.com` | 服务页面顶部显示的地址，不带末尾斜杠。支付返回地址、分享链接都用它拼接。绑定自定义域名后改成自定义域名 |
+| `YCG_ADMIN_TOKEN` | 随机字符串 | 登录 `/admin` 运营看板用，记下来 |
+| `YCG_WORKERS` | `2` | 同时处理的照片数。Standard 填 2 |
+| `YCG_SHOWCASE_URL` | AI付官网作品详情页链接 | 提交作品、拿到详情页后再填 |
+
+`PORT` 不用设置：Render 会自动注入，入口脚本会监听它。
+
+**开通真实支付**（`YCG_PAY_MODE=nowpay`）时再加下面几项。密钥**直接填进环境变量**，不要用 Render 的 Secret Files：Secret Files 默认只有 root 能读，程序降权后可能读不到。
+
+| Key | Value |
+|---|---|
+| `ALIPAY_APP_ID` | 开放平台应用 ID |
+| `ALIPAY_PRIVATE_KEY` | 应用私钥：密钥工具导出的那一长串，带不带 `-----BEGIN ...-----` 头尾都行 |
+| `ALIPAY_PUBLIC_KEY` | **支付宝公钥**（不是“应用公钥”） |
+| `NOWPAY_PRODUCT_COUNT` | 即刻收小程序里「照片导出」的商品 ID |
+| `NOWPAY_PRODUCT_MONTHLY` | 「备考季月卡」的商品 ID（没建可以不填） |
+
+保存环境变量后，选择保存并重新部署。
+
+#### 4. 确认上线成功
+
+- **Logs** 里出现 `启动：env=prod pay_mode=off base_url=https://…`。
+- 浏览器打开 `https://你的服务名.onrender.com/api/health`，返回 `{"ok":true,"pay_mode":"off"}`。
+- 打开首页，选一个规格上传照片，能看到预审报告。
+
+#### 5. 自定义域名（可选）
+
+在 Settings → Custom Domains 里添加域名，按提示在域名的 DNS 里加一条 CNAME，指向 `你的服务名.onrender.com`，Render 会自动签发 HTTPS 证书。服务器在境外，不需要 ICP 备案。生效后把 `YCG_BASE_URL` 改成新域名。
+
+#### 国内访问要实测
+
+Render 的机房都在境外，国内访问的速度和稳定性没有保证，而评委和用户都在国内。上线后请用**国内手机网络（移动、联通、电信）**和**支付宝内置浏览器**实际走一遍打开、上传、支付全流程。如果经常打不开或很慢，评审期间会直接影响评分，那就换成国内服务器（方式二，需要 ICP 备案）。
+
+#### 日常运维
+
+| 要做什么 | 怎么做 |
+|---|---|
+| 更新代码（包括规格库 `specs.json`） | 推送到 GitHub 的 `main`，Render 自动部署 |
+| 改配置 | Environment 页面修改后保存并重新部署 |
+| 看日志 | 服务页面的 **Logs** |
+| 回滚 | **Events** 里找到之前成功的部署，点 Rollback |
+| 备份数据库 | 服务页面的 **Shell**（付费实例才有）里运行 `python -c "import sqlite3;s=sqlite3.connect('/data/yiciguo.db');d=sqlite3.connect('/data/backup.db');s.backup(d);d.close()"`。备份文件保存在磁盘的 `/data` 里；要下载到本地，参考 Render 文档的「SSH and Shell Access」 |
+
+#### Render 常见报错
+
+| 报错或现象 | 原因与处理 |
+|---|---|
+| `RuntimeError: 生产环境必须设置 YCG_SECRET_KEY` | Environment 页面里没有 `YCG_SECRET_KEY`。注意 `backend/.env` 不会上传到 GitHub，在里面填了也没用 |
+| `RuntimeError: 生产环境禁止使用模拟支付（YCG_PAY_MODE=mock）` | Environment 页面里加上 `YCG_PAY_MODE=off` |
+| `ValueError: 缺少 ALIPAY_APP_ID / ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY` | `nowpay` 模式下这三项缺了至少一项 |
+| `ValueError: Could not deserialize key data` | 密钥填错：私钥填成了公钥，或者 `ALIPAY_PUBLIC_KEY` 填成了“应用公钥” |
+| Events 里提示内存超限（Ran out of memory），服务反复重启 | 实例太小，换成 Standard |
+| 部署后之前的照片、取件码都没了 | 没挂磁盘，或者 Mount Path 不是 `/data` |
+| `Port scan timeout` / `No open ports detected` | 通常是应用启动就崩了，往上翻 Logs 找第一条报错 |
+| 第一次打开要等很久 | Free 实例休眠了，换付费实例 |
+
+### 方式二：自有服务器（Docker Compose）
 
 `docker compose` 起两个容器：
 
 | 容器 | 作用 |
 |---|---|
-| `app` | 应用本身。镜像里已包含前端构建产物和两个模型；以非 root 用户（uid **10001**）运行，监听容器内 8000 端口，不直接对外 |
+| `app` | 应用本身，监听容器内 8000 端口，不直接对外 |
 | `caddy` | 反向代理，自动申请和续期 HTTPS 证书，对外开放 80/443 |
 
 宿主机上的目录：
@@ -111,17 +205,17 @@ cd backend && .venv/Scripts/python -m pytest -q
 yiciguo/
 ├─ .env              只给 docker compose 用：YCG_DOMAIN=你的域名（不要提交到 git）
 ├─ backend/.env      应用配置（密钥、支付参数），挂进 app 容器
-├─ data/             照片和数据库 → 容器内 /data，需要授权给 uid 10001
+├─ data/             照片和数据库 → 容器内 /data（启动时自动授权给 uid 10001）
 └─ secrets/          支付宝密钥文件 → 容器内 /secrets（只读），需要授权给 uid 10001
 ```
 
-### 1. 准备服务器
+#### 1. 准备服务器
 
 - Linux，**2 核 4G 起**，已安装 Docker 和 Compose 插件（`docker compose version` 能输出版本号）。
 - 域名的 A 记录解析到服务器公网 IP。**国内服务器必须先完成 ICP 备案**，否则 80/443 访问会被拦截，证书也申请不下来。
 - 安全组和防火墙放行 **80、443**。8000 不需要对外开放。
 
-### 2. 拉取代码
+#### 2. 拉取代码
 
 ```bash
 git clone https://github.com/wunllso472-cyber/yiciguo.git
@@ -130,7 +224,7 @@ cd yiciguo
 
 两个模型文件（`backend/models`，约 29MB）已经在仓库里，不用再运行 `download_models.py`。
 
-### 3. 配置 `backend/.env`
+#### 3. 配置 `backend/.env`
 
 先把域名写进变量，下面的命令都会用到：
 
@@ -159,7 +253,7 @@ grep -E "^YCG_(BASE_URL|SECRET_KEY|ADMIN_TOKEN|PAY_MODE)=" backend/.env   # 检�
 | `YCG_ADMIN_TOKEN` | 随机字符串 | 为空时 `/admin` 看板无法登录 |
 | `YCG_PAY_MODE` | 即刻收白名单获批前填 `off`，获批后改成 `nowpay` | 填 `mock` 时启动报错（生产环境禁止模拟支付）；`off` 时网站能正常使用，点支付提示“支付暂未开通” |
 | `YCG_SHOWCASE_URL` | 拿到 AI付官网作品详情页链接后填 | 付款成功页“去点赞”按钮跳到活动首页 |
-| `YCG_WORKERS` | 4G 内存填 `2`，2G 内存填 `1` | 太大会在同时处理多张照片时内存不足，容器被杀 |
+| `YCG_WORKERS` | 2G 及以上内存填 `2`，1G 内存填 `1` | 实测处理照片时峰值约 550MB；填太大会在同时处理多张照片时内存不足，容器被杀 |
 
 **开通真实支付**（`YCG_PAY_MODE=nowpay`）时，再填下面这几项。密钥文件路径填的是**容器内路径**：
 
@@ -180,21 +274,21 @@ cp 应用私钥.txt   secrets/app_private_key.pem      # 应用私钥
 cp 支付宝公钥.txt secrets/alipay_public_key.pem    # 支付宝公钥，不是“应用公钥”
 ```
 
-### 4. 设置域名，给目录授权
+#### 4. 设置域名，给密钥目录授权
 
 ```bash
 echo "YCG_DOMAIN=$DOMAIN" > .env            # 项目根目录的 .env，Caddy 用它申请证书
-mkdir -p data secrets
-sudo chmod 400 secrets/*.pem 2>/dev/null || true   # 有密钥文件时收紧权限（没有会跳过）
-sudo chown -R 10001:10001 data secrets
+# 有支付宝密钥文件时执行：只让容器用户（uid 10001）能读
+sudo chmod 400 secrets/*.pem
+sudo chown -R 10001:10001 secrets
 sudo chmod 700 secrets
 ```
 
-一定要做这一步：容器里的程序以 uid 10001 运行。`./data` 如果是 Docker 自动创建的，属于 root，程序写不进去，启动时会报 `unable to open database file` 或 `PermissionError: '/data/...'`。
+`./data` 不用手动授权，容器启动时入口脚本会自动交给 uid 10001。
 
 授权之后 `secrets/` 只有 uid 10001 能进。以后再放密钥文件（比如开通支付时），要用 `sudo cp`，放完重新执行上面后三行。
 
-### 5. 构建并启动
+#### 5. 构建并启动
 
 ```bash
 docker compose up -d --build         # 首次构建要几分钟（npm、pip、mediapipe）
@@ -205,7 +299,7 @@ curl https://$DOMAIN/api/health      # 返回 {"ok":true,"pay_mode":"off"}
 
 第一次访问前，Caddy 要花 10–60 秒申请证书，进度用 `docker compose logs caddy` 查看。
 
-### 日常运维
+#### 日常运维
 
 | 要做什么 | 命令 |
 |---|---|
@@ -226,7 +320,7 @@ sudo cp data/backup.db ~/yiciguo-$(date +%F).db
 - 应用以**单进程**运行（对账/清理线程、限流、核销锁都在进程内），不要开多副本；吞吐量用 `YCG_WORKERS` 调。
 - 规格库 `specs.json` 打包在镜像里，在服务器上直接改文件不会生效，要重新构建（`docker compose up -d --build`）。
 
-### 常见报错
+#### 常见报错
 
 容器启动失败时，`docker compose ps` 里 `app` 会一直处于 `Restarting`，用 `docker compose logs --tail=50 app` 看最后的报错。
 
@@ -238,7 +332,7 @@ sudo cp data/backup.db ~/yiciguo-$(date +%F).db
 | `RuntimeError: YCG_PAY_MODE=nowpay 时必须配置 NOWPAY_PRODUCT_COUNT` | 填入即刻收小程序商品详情页里复制的商品 ID |
 | `FileNotFoundError` / `PermissionError` 指向 `/secrets/...` | 宿主机 `secrets/` 里没有这个文件，或者没授权给 uid 10001（第 4 步） |
 | `ValueError: Could not deserialize key data` | 密钥文件内容不对：私钥填成了公钥，或者 `ALIPAY_PUBLIC_KEY_FILE` 填成了“应用公钥”（应该填“支付宝公钥”） |
-| `unable to open database file` / `PermissionError: '/data/...'` | `./data` 没授权给 uid 10001（第 4 步） |
+| `unable to open database file` / `PermissionError: '/data/...'` | 正常不会出现，入口脚本会自动授权。出现的话检查 `docker-compose.yml` 是否给 app 加了 `user:`，或者改了启动命令、跳过了入口脚本 |
 | `ImportError: libGL.so.1` 等缺少 `.so` 库 | mediapipe 缺系统库：把缺的包加到 `Dockerfile` 的 `apt-get install` 那一行，重新构建 |
 | 浏览器打不开、证书报错 | 依次检查：域名是否已解析到本机（`ping 域名`）、80/443 是否放行、国内服务器是否已备案、根目录 `.env` 里的 `YCG_DOMAIN` 是否正确。详情看 `docker compose logs caddy` |
 | 能打开网站，点支付提示“支付暂未开通” | `YCG_PAY_MODE=off` 时就是这样，属于正常。获批后按第 3 步改成 `nowpay` |
@@ -247,7 +341,7 @@ sudo cp data/backup.db ~/yiciguo-$(date +%F).db
 
 ## 规格库维护
 
-编辑 `backend/app/data/specs.json`。本地开发时调用 `POST /api/admin/specs/reload`（带 `Authorization: Bearer <YCG_ADMIN_TOKEN>`）或重启即可生效；Docker 部署时规格库打包在镜像里，要提交后在服务器上执行 `git pull && docker compose up -d --build`。启动时会校验：
+编辑 `backend/app/data/specs.json`。本地开发时调用 `POST /api/admin/specs/reload`（带 `Authorization: Bearer <YCG_ADMIN_TOKEN>`）或重启即可生效；Docker 部署时规格库打包在镜像里：Render 上推送到 GitHub 即自动生效；自有服务器上执行 `git pull && docker compose up -d --build`。启动时会校验：
 
 - `status=verified` 必须有 `official: true` 的来源和 `verified_at`，否则拒绝启动；
 - 底色、分类、KB 区间、头部比例都会做合法性检查。
