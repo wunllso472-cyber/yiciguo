@@ -1,0 +1,21 @@
+# 后端依赖（Python 3.11–3.13）
+# 注意：mediapipe 要单独用 --no-deps 安装（它默认依赖带 GUI 的 opencv-contrib-python，
+# 与这里的 headless 版本冲突），见 README「本地运行」。
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
+SQLAlchemy==2.1.8
+pydantic==2.14.3
+python-multipart==0.0.33
+httpx==0.28.1
+cryptography==50.0.2
+numpy==2.5.4
+pillow==13.0.0
+pillow-heif==1.8.1
+opencv-contrib-python-headless==5.0.0.93
+onnxruntime==1.31.1
+# mediapipe 的运行依赖（--no-deps 安装 mediapipe 后需要这些）
+absl-py==2.5.1
+flatbuffers==25.12.19
+matplotlib==3.11.2
+# 测试
+pytest==9.2.0

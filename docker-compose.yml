@@ -1,0 +1,29 @@
+# 生产部署：docker compose up -d --build
+# 先准备 backend/.env（参考 backend/.env.example），密钥文件放 ./secrets/
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: backend/.env
+    environment:
+      YCG_ENV: prod
+    volumes:
+      - ./data:/data
+      - ./secrets:/secrets:ro
+    expose:
+      - "8000"
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      YCG_DOMAIN: ${YCG_DOMAIN:-example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+volumes:
+  caddy_data: {}

@@ -1,0 +1,11 @@
+# 自动申请 HTTPS 证书（域名需已解析到服务器，国内服务器还需完成 ICP 备案）
+{$YCG_DOMAIN} {
+	encode gzip
+	request_body {
+		max_size 20MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+	}
+	reverse_proxy app:8000
+}

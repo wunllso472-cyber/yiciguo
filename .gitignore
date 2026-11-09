@@ -1,0 +1,20 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# 运行数据（照片、数据库）绝不入库
+backend/data/
+/data/
+# 密钥与本地配置
+backend/.env
+secrets/
+*.pem
+# 前端
+frontend/node_modules/
+frontend/dist/
+# 杂项
+*.part
+.DS_Store
+*.tsbuildinfo
+*.log
