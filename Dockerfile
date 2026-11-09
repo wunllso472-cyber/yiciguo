@@ -14,7 +14,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     YCG_ENV=prod \
     YCG_DATA_DIR=/data \
     YCG_FRONTEND_DIST=/app/frontend/dist \
-    YCG_FONT_PATH=/usr/share/fonts/truetype/wqy/wqy-microhei.ttc
+    YCG_FONT_PATH=/usr/share/fonts/truetype/wqy/wqy-microhei.ttc \
+    YCG_WORKERS=1 \
+    MALLOC_ARENA_MAX=2
+# YCG_WORKERS=1：默认一次只处理一张照片，512MB 内存的实例（如 Render Free）也能跑；内存 ≥2GB 时可设为 2
+# MALLOC_ARENA_MAX=2：限制 glibc 每线程内存池数量，减少多线程下的内存碎片
 # 中文字体（水印、打印排版用）；mediapipe 运行时需要的图形库
 RUN apt-get update \
  && apt-get install -y --no-install-recommends fonts-wqy-microhei libgl1 libglib2.0-0 libegl1 libgles2 \

@@ -96,17 +96,20 @@ class _LRU(OrderedDict):
             return super().pop(key, default)
 
 
-_cache = _LRU(6)
+# 只缓存最近 2 张：解码一次只要几十毫秒，缓存太多反而长期占内存（2400px 一张约 17MB）
+_cache = _LRU(2)
 
 
 def _load_work(photo_id: str) -> tuple[np.ndarray, np.ndarray]:
+    """返回工作图（uint8 RGB）和 alpha（float32 0–1）。缓存里的 alpha 存 uint8，用时再转换。"""
     def loader():
         d = photo_dir(photo_id)
         work = np.asarray(Image.open(d / "work.jpg").convert("RGB"))
-        alpha = cv2.imread(str(d / "alpha.png"), cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255.0
-        return work, alpha
+        alpha_u8 = cv2.imread(str(d / "alpha.png"), cv2.IMREAD_GRAYSCALE)
+        return work, alpha_u8
 
-    return _cache.get_or_load(photo_id, loader)
+    work, alpha_u8 = _cache.get_or_load(photo_id, loader)
+    return work, alpha_u8.astype(np.float32) * np.float32(1 / 255)
 
 
 # ---------------------------------------------------------------- 上传后的分析

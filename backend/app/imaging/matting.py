@@ -15,6 +15,10 @@ class Matter:
 
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 2
+        # 关掉内存池和内存规划：推理完立即归还中间结果占用的内存（约 150MB），小内存实例不会被撑爆；
+        # 代价是每次推理多几毫秒的分配开销
+        opts.enable_cpu_mem_arena = False
+        opts.enable_mem_pattern = False
         self.session = ort.InferenceSession(str(model_path), sess_options=opts, providers=["CPUExecutionProvider"])
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
@@ -83,6 +87,8 @@ def matte_person(matter: Matter, rgb: np.ndarray, face: FaceResult) -> np.ndarra
     alpha[top:bottom, left:right] = alpha_crop
     nose = face.pt(1)
     alpha = keep_main_component(alpha, (int(nose[0]), int(nose[1])))
-    # 去掉背景里极淡的残影
-    alpha = np.clip((alpha - 0.03) / 0.94, 0.0, 1.0)
+    # 去掉背景里极淡的残影（原地计算，避免整幅图的临时副本）
+    alpha -= np.float32(0.03)
+    alpha *= np.float32(1 / 0.94)
+    np.clip(alpha, 0.0, 1.0, out=alpha)
     return alpha

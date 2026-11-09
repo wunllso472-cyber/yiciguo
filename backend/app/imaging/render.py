@@ -90,14 +90,22 @@ def _crop_with_pad(img: np.ndarray, x0: float, y0: float, w: float, h: float) ->
 
 def _blur_fusion(image: np.ndarray, fg: np.ndarray, bg: np.ndarray, alpha: np.ndarray, r: int):
     """Forte & Pitié 2021 “Approximate Fast Foreground Colour Estimation”：去除换底后的原背景色边。"""
+    # 尽量原地计算，减少整幅三通道浮点临时数组（小内存实例上这里是峰值所在）
+    eps = np.float32(1e-5)
     a = alpha[..., None]
+    inv_a = 1 - a
     blurred_a = cv2.blur(alpha, (r, r))[..., None]
-    blurred_fa = cv2.blur(fg * a, (r, r))
-    blurred_f = blurred_fa / (blurred_a + 1e-5)
-    blurred_b1a = cv2.blur(bg * (1 - a), (r, r))
-    blurred_b = blurred_b1a / ((1 - blurred_a) + 1e-5)
-    fg = blurred_f + a * (image - a * blurred_f - (1 - a) * blurred_b)
-    return np.clip(fg, 0, 1), blurred_b
+    blurred_f = cv2.blur(fg * a, (r, r))
+    blurred_f /= blurred_a + eps
+    blurred_b = cv2.blur(bg * inv_a, (r, r))
+    blurred_b /= (1 - blurred_a) + eps
+    # fg = blurred_f + a * (image - a * blurred_f - (1 - a) * blurred_b)
+    out = image - a * blurred_f
+    out -= inv_a * blurred_b
+    out *= a
+    out += blurred_f
+    np.clip(out, 0, 1, out=out)
+    return out, blurred_b
 
 
 def estimate_foreground(image: np.ndarray, alpha: np.ndarray) -> np.ndarray:
@@ -110,18 +118,24 @@ def estimate_foreground(image: np.ndarray, alpha: np.ndarray) -> np.ndarray:
 
 
 def render(work: np.ndarray, alpha: np.ndarray, plan: CropPlan, bg_rgb: tuple[int, int, int]) -> np.ndarray:
-    src = _crop_with_pad(work, plan.x0, plan.y0, plan.crop_w, plan.crop_h).astype(np.float32) / 255.0
+    src = _crop_with_pad(work, plan.x0, plan.y0, plan.crop_w, plan.crop_h)
     a = _crop_with_pad(alpha, plan.x0, plan.y0, plan.crop_w, plan.crop_h).astype(np.float32)
-    # 在源分辨率上合成，再整体缩放，边缘更干净
-    max_side = 1600
+    # 在高于输出的分辨率上合成，再整体缩小，边缘更干净；
+    # 合成分辨率取输出长边的 1.5 倍（800–1600），够用即可，避免大图在前景估计时占用几百 MB 内存
+    max_side = int(min(1600, max(800, 1.5 * max(plan.out_w, plan.out_h))))
     k = min(1.0, max_side / max(src.shape[:2]))
     if k < 1.0:
         size = (max(1, int(src.shape[1] * k)), max(1, int(src.shape[0] * k)))
-        src = cv2.resize(src, size, interpolation=cv2.INTER_AREA)
+        src = cv2.resize(src, size, interpolation=cv2.INTER_AREA)  # 先在 uint8 上缩小，再转浮点，少占内存
         a = cv2.resize(a, size, interpolation=cv2.INTER_AREA)
+    src = src.astype(np.float32)
+    src *= np.float32(1 / 255)
     fg = estimate_foreground(src, a)
     bg = np.array(bg_rgb, dtype=np.float32) / 255.0
-    comp = fg * a[..., None] + bg[None, None, :] * (1 - a[..., None])
+    a3 = a[..., None]
+    comp = fg
+    comp *= a3
+    comp += bg[None, None, :] * (1 - a3)
     interp = cv2.INTER_AREA if comp.shape[0] >= plan.out_h else cv2.INTER_CUBIC
     out = cv2.resize(comp, (plan.out_w, plan.out_h), interpolation=interp)
     return np.clip(out * 255.0 + 0.5, 0, 255).astype(np.uint8)

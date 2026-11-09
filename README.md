@@ -114,10 +114,10 @@ cd backend && .venv/Scripts/python -m pytest -q
 | Language / Runtime | `Docker` | 自动使用仓库根目录的 `Dockerfile`。Dockerfile Path 填 `./Dockerfile`，Docker Build Context 填 `.` |
 | Branch | `main` | Auto-Deploy 保持 `On Commit`，推送代码后自动部署 |
 | Region | **Singapore** | 离国内最近。区域**创建后不能改**，选错了只能新建一个服务 |
-| Instance Type | **Standard（1 CPU / 2 GB，$25/月）** | 本机实测，处理照片时内存峰值约 500–550MB。512MB 的 Free 和 Starter 会因内存不足被强制重启。Free 还有两个问题：15 分钟没人访问就休眠，再打开要等约 1 分钟；不能挂磁盘 |
+| Instance Type | 验证阶段：**Free**<br>正式参赛：**Standard（1 CPU / 2 GB，$25/月）** | 本机用 2400px 照片实测，一次处理一张时内存峰值约 400MB，常驻约 270MB，512MB 的 Free 能跑（镜像默认 `YCG_WORKERS=1`，一次只处理一张）。<br>Free 的限制：只有 0.1 CPU，一张照片要处理几十秒；15 分钟没人访问就休眠，下次打开要等约 1 分钟；不能挂磁盘，每次部署或重启都会清空数据。<br>正式参赛前换成 Standard 并挂磁盘（第 2 步） |
 | Health Check Path | `/api/health` | |
 
-#### 2. 挂持久化磁盘（Disks）
+#### 2. 挂持久化磁盘（Disks，正式参赛前必须做；Free 验证阶段跳过）
 
 Render 默认使用临时文件系统：**每次部署（每推送一次代码都会部署）和每次重启，容器里写入的文件都会清空**。不挂磁盘的话，数据库也会跟着清空，用户的解锁记录、取件码、已购次数和账号的对应关系都会丢失，已经付过钱的用户就找不回自己的次数了。
 
@@ -136,7 +136,7 @@ Render 默认使用临时文件系统：**每次部署（每推送一次代码�
 | `YCG_PAY_MODE` | `off` | **必填**，不填默认是 `mock`，会报“生产环境禁止使用模拟支付”。即刻收白名单获批前填 `off`，网站正常使用，点支付提示“支付暂未开通”；获批后改成 `nowpay` |
 | `YCG_BASE_URL` | `https://你的服务名.onrender.com` | 服务页面顶部显示的地址，不带末尾斜杠。支付返回地址、分享链接都用它拼接。绑定自定义域名后改成自定义域名 |
 | `YCG_ADMIN_TOKEN` | 随机字符串 | 登录 `/admin` 运营看板用，记下来 |
-| `YCG_WORKERS` | `2` | 同时处理的照片数。Standard 填 2 |
+| `YCG_WORKERS` | Free 不用填（默认 1）；Standard 填 `2` | 同时处理的照片数。512MB 内存的实例不要大于 1 |
 | `YCG_SHOWCASE_URL` | AI付官网作品详情页链接 | 提交作品、拿到详情页后再填 |
 
 `PORT` 不用设置：Render 会自动注入，入口脚本会监听它。
@@ -185,7 +185,8 @@ Render 的机房都在境外，国内访问的速度和稳定性没有保证，�
 | `RuntimeError: 生产环境禁止使用模拟支付（YCG_PAY_MODE=mock）` | Environment 页面里加上 `YCG_PAY_MODE=off` |
 | `ValueError: 缺少 ALIPAY_APP_ID / ALIPAY_PRIVATE_KEY / ALIPAY_PUBLIC_KEY` | `nowpay` 模式下这三项缺了至少一项 |
 | `ValueError: Could not deserialize key data` | 密钥填错：私钥填成了公钥，或者 `ALIPAY_PUBLIC_KEY` 填成了“应用公钥” |
-| Events 里提示内存超限（Ran out of memory），服务反复重启 | 实例太小，换成 Standard |
+| Events 里提示内存超限（Ran out of memory），服务反复重启 | 512MB 的实例上确认 `YCG_WORKERS` 没填或填的是 `1`；还是超限就换成 Standard（Starter 也只有 512MB） |
+| 上传后一直显示处理中，要等几十秒 | Free 只有 0.1 CPU，属于正常；第一张照片还要先加载模型，会更慢 |
 | 部署后之前的照片、取件码都没了 | 没挂磁盘，或者 Mount Path 不是 `/data` |
 | `Port scan timeout` / `No open ports detected` | 通常是应用启动就崩了，往上翻 Logs 找第一条报错 |
 | 第一次打开要等很久 | Free 实例休眠了，换付费实例 |
@@ -253,7 +254,7 @@ grep -E "^YCG_(BASE_URL|SECRET_KEY|ADMIN_TOKEN|PAY_MODE)=" backend/.env   # 检�
 | `YCG_ADMIN_TOKEN` | 随机字符串 | 为空时 `/admin` 看板无法登录 |
 | `YCG_PAY_MODE` | 即刻收白名单获批前填 `off`，获批后改成 `nowpay` | 填 `mock` 时启动报错（生产环境禁止模拟支付）；`off` 时网站能正常使用，点支付提示“支付暂未开通” |
 | `YCG_SHOWCASE_URL` | 拿到 AI付官网作品详情页链接后填 | 付款成功页“去点赞”按钮跳到活动首页 |
-| `YCG_WORKERS` | 2G 及以上内存填 `2`，1G 内存填 `1` | 实测处理照片时峰值约 550MB；填太大会在同时处理多张照片时内存不足，容器被杀 |
+| `YCG_WORKERS` | 2G 及以上内存填 `2`，1G 及以下填 `1` | 一次处理一张时峰值约 400MB；填太大会在同时处理多张照片时内存不足，容器被杀 |
 
 **开通真实支付**（`YCG_PAY_MODE=nowpay`）时，再填下面这几项。密钥文件路径填的是**容器内路径**：
 
