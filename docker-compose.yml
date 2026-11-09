@@ -1,5 +1,5 @@
 # 生产部署：docker compose up -d --build
-# 先准备 backend/.env（参考 backend/.env.example），密钥文件放 ./secrets/
+# 完整步骤见 README「部署（Docker）」：先准备 backend/.env、根目录 .env（YCG_DOMAIN），并把 ./data ./secrets 授权给 uid 10001
 services:
   app:
     build: .

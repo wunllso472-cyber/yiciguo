@@ -8,6 +8,7 @@ backend/data/
 /data/
 # 密钥与本地配置
 backend/.env
+/.env
 secrets/
 *.pem
 # 前端
